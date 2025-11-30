@@ -140,7 +140,12 @@ exports.handler = async (event) => {
         if (!q || q.trim().length === 0) {
             return {
                 statusCode: 200,
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key",
+                    "Access-Control-Allow-Methods": "GET,OPTIONS"
+                },
                 body: JSON.stringify([])
             };
         }
@@ -179,10 +184,14 @@ exports.handler = async (event) => {
                     : null
             };
         });
-
         return {
             statusCode: 200,
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key",
+                "Access-Control-Allow-Methods": "GET,OPTIONS"
+            },
             body: JSON.stringify(results)
         };
     } catch (err) {
@@ -190,7 +199,12 @@ exports.handler = async (event) => {
 
         return {
             statusCode: 500,
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key",
+                "Access-Control-Allow-Methods": "GET,OPTIONS"
+            },
             body: JSON.stringify({
                 message: "Internal server error",
                 error: err.message
