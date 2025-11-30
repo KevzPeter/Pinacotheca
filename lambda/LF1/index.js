@@ -116,7 +116,9 @@ exports.handler = async (event) => {
             );
 
             const rekognitionLabels =
-                (detectResp.Labels || []).map(l => l.Name).filter(Boolean);
+                (detectResp.Labels || [])
+                    .map(l => l.Name ? l.Name.toLowerCase() : null)
+                    .filter(Boolean);
 
             console.log('Rekognition labels:', rekognitionLabels);
 
@@ -125,9 +127,10 @@ exports.handler = async (event) => {
                 new HeadObjectCommand({ Bucket: bucket, Key: key })
             );
 
-            const customLabels = extractCustomLabelsFromMetadata(
-                headResp.Metadata
-            );
+            const customLabelsRaw = extractCustomLabelsFromMetadata(headResp.Metadata);
+            const customLabels = customLabelsRaw
+                .map(s => s.toLowerCase())
+                .filter(Boolean);
 
             console.log('Custom labels:', customLabels);
 
@@ -159,15 +162,13 @@ exports.handler = async (event) => {
             });
 
         } catch (err) {
-            console.error(
-                `Error processing s3://${bucket}/${key}:`,
-                err
-            );
-            results.push({
-                key,
-                status: 'ERROR',
-                error: err.message
-            });
+            if (err.Code === "InvalidImageFormatException" || err.name === "InvalidImageFormatException") {
+                console.warn(`Skipping invalid image s3://${bucket}/${key}:`, err.message);
+                results.push({ key, status: "SKIPPED_INVALID_IMAGE", error: err.message });
+            } else {
+                console.error(`Error processing s3://${bucket}/${key}:`, err);
+                results.push({ key, status: "ERROR", error: err.message });
+            }
         }
     }
 
