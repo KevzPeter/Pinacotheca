@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Photo Album Search</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 2rem auto;
+        }
+
+        h1 {
+            margin-bottom: 1rem;
+        }
+
+        section {
+            margin-bottom: 2rem;
+            padding: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        label {
+            display: block;
+            margin-top: 0.5rem;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 0.4rem;
+        }
+
+        button {
+            margin-top: 0.6rem;
+            padding: 0.4rem 0.8rem;
+        }
+
+        .results {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .photo-card {
+            border: 1px solid #ddd;
+            padding: 0.5rem;
+            border-radius: 4px;
+            width: 200px;
+        }
+
+        .photo-card img {
+            max-width: 100%;
+            display: block;
+        }
+
+        .labels {
+            font-size: 0.8rem;
+            color: #444;
+            margin-top: 0.3rem;
+        }
+
+        .status {
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Photo Album Search</h1>
+
+    <section>
+        <h2>Upload Photo</h2>
+        <label>
+            Choose image:
+            <input type="file" id="fileInput" accept="image/*">
+        </label>
+        <label>
+            Custom labels (comma separated):
+            <input type="text" id="labelsInput" placeholder="cat,tabby,orange">
+        </label>
+        <button id="uploadBtn">Upload</button>
+        <div class="status" id="uploadStatus"></div>
+    </section>
+
+    <section>
+        <h2>Search Photos</h2>
+        <label>
+            Search query:
+            <input type="text" id="searchInput" placeholder="show me pictures of cat">
+        </label>
+        <button id="searchBtn">Search</button>
+        <div class="status" id="searchStatus"></div>
+        <div class="results" id="results"></div>
+    </section>
+
+    <script>
+        // Replace these with your actual values
+        const API_BASE = "https://7ksh9hbi88.execute-api.us-east-1.amazonaws.com/stage";
+        const API_KEY = "Be7cHTa2gw4lxVnYcfOEm6txXVRQUVwU8egh2oDE";
+
+        async function uploadPhoto() {
+            const fileInput = document.getElementById("fileInput");
+            const labelsInput = document.getElementById("labelsInput");
+            const statusEl = document.getElementById("uploadStatus");
+
+            statusEl.textContent = "";
+
+            if (!fileInput.files || fileInput.files.length === 0) {
+                statusEl.textContent = "Please choose an image file.";
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const customLabels = labelsInput.value.trim();
+
+            const objectKey = encodeURIComponent(file.name);
+
+            const url = `${API_BASE}/photos?objectKey=${objectKey}`;
+
+            try {
+                statusEl.textContent = "Uploading...";
+
+                const resp = await fetch(url, {
+                    method: "PUT",
+                    headers: {
+                        "x-api-key": API_KEY,
+                        "x-amz-meta-customLabels": customLabels,
+                        "Content-Type": "application/octet-stream"
+                    },
+                    body: file
+                });
+
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    statusEl.textContent = `Upload failed: ${resp.status} ${resp.statusText} ${text}`;
+                    return;
+                }
+
+                statusEl.textContent = "Upload successful. It may take a moment for indexing.";
+                // Optionally clear inputs
+                fileInput.value = "";
+                labelsInput.value = "";
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = `Upload error: ${err.message}`;
+            }
+        }
+
+        async function searchPhotos() {
+            const searchInput = document.getElementById("searchInput");
+            const statusEl = document.getElementById("searchStatus");
+            const resultsEl = document.getElementById("results");
+
+            statusEl.textContent = "";
+            resultsEl.innerHTML = "";
+
+            const q = searchInput.value.trim();
+            if (!q) {
+                statusEl.textContent = "Please enter a search query.";
+                return;
+            }
+
+            const url = `${API_BASE}/search?q=${encodeURIComponent(q)}`;
+
+            try {
+                statusEl.textContent = "Searching...";
+
+                const resp = await fetch(url, {
+                    method: "GET",
+                    headers: {
+                        "x-api-key": API_KEY
+                    }
+                });
+
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    statusEl.textContent = `Search failed: ${resp.status} ${resp.statusText} ${text}`;
+                    return;
+                }
+
+                const data = await resp.json();
+                statusEl.textContent = `Found ${data.length} photo(s).`;
+
+                data.forEach(item => {
+                    const card = document.createElement("div");
+                    card.className = "photo-card";
+
+                    if (item.url) {
+                        const img = document.createElement("img");
+                        img.src = item.url;
+                        img.alt = item.objectKey || "";
+                        card.appendChild(img);
+                    }
+
+                    const keyEl = document.createElement("div");
+                    keyEl.textContent = item.objectKey || "";
+                    card.appendChild(keyEl);
+
+                    if (item.labels && item.labels.length > 0) {
+                        const labelsEl = document.createElement("div");
+                        labelsEl.className = "labels";
+                        labelsEl.textContent = "Labels: " + item.labels.join(", ");
+                        card.appendChild(labelsEl);
+                    }
+
+                    resultsEl.appendChild(card);
+                });
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = `Search error: ${err.message}`;
+            }
+        }
+
+        document.getElementById("uploadBtn").addEventListener("click", uploadPhoto);
+        document.getElementById("searchBtn").addEventListener("click", searchPhotos);
+    </script>
+</body>
+
+</html>
