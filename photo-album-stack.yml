@@ -1,0 +1,676 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Pinacotheca app deployment template with S3, Lambda, and API Gateway"
+
+Parameters:
+  PhotosBucketName:
+    Type: String
+    Default: cs9223-photos-kevin-cfn
+    Description: Name of the S3 bucket for photo storage
+  FrontendBucketName:
+    Type: String
+    Default: cs9223-photos-frontend-kevin-cfn
+    Description: Name of the S3 bucket for hosting the static website
+  ApiStageName:
+    Type: String
+    Default: prod
+    Description: API Gateway stage name
+
+Resources:
+  ########################################
+  # S3 buckets
+  ########################################
+
+  PhotosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref PhotosBucketName
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref FrontendBucketName
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPublicReadForWebsite
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+
+  ########################################
+  # IAM roles for Lambdas
+  ########################################
+  ApiGatewayLambdaInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ApiGw-LambdaInvoke-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: apigw-invoke-lambda
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt LF1IndexPhotos.Arn
+                  - !GetAtt LF2SearchPhotos.Arn
+
+  LF1Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "LF1-index-photos-role-cfn-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: lambda-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+        - PolicyName: lambda-s3-photos-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "${PhotosBucket.Arn}/*"
+
+  LF2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "LF2-search-photos-role-cfn-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: lambda-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+  ########################################
+  # Lambda functions (inline code)
+  ########################################
+
+  LF1IndexPhotos:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "LF1-index-photos-cfn-${AWS::StackName}"
+      Runtime: nodejs24.x
+      Handler: index.handler
+      Role: !GetAtt LF1Role.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          PHOTOS_BUCKET: !Ref PhotosBucketName
+      Code:
+        ZipFile: |
+          const { S3Client, HeadObjectCommand } = require("@aws-sdk/client-s3");
+          const { RekognitionClient, DetectLabelsCommand } = require("@aws-sdk/client-rekognition");
+          const https = require("https");
+          const { URL } = require("url");
+
+          // v3 clients - no config needed if using Lambda's IAM role/region defaults
+          const s3 = new S3Client({});
+          const rekognition = new RekognitionClient({});
+
+          const OPENSEARCH_ENDPOINT = process.env.OPENSEARCH_ENDPOINT;
+          const OPENSEARCH_INDEX = process.env.OPENSEARCH_INDEX || 'photos';
+          const OPENSEARCH_USERNAME = process.env.OPENSEARCH_USERNAME;
+          const OPENSEARCH_PASSWORD = process.env.OPENSEARCH_PASSWORD;
+
+          // Helper: HTTP POST with Basic Auth to OpenSearch
+          function indexDocumentToOpenSearch(doc) {
+              return new Promise((resolve, reject) => {
+                  if (!OPENSEARCH_ENDPOINT) {
+                      return reject(new Error('OPENSEARCH_ENDPOINT not set'));
+                  }
+
+                  const endpoint = new URL(OPENSEARCH_ENDPOINT);
+                  const path = `/${OPENSEARCH_INDEX}/_doc`;
+
+                  const body = JSON.stringify(doc);
+                  const auth = Buffer.from(
+                      `${OPENSEARCH_USERNAME}:${OPENSEARCH_PASSWORD}`
+                  ).toString('base64');
+
+                  const options = {
+                      hostname: endpoint.hostname,
+                      port: endpoint.port || 443,
+                      path,
+                      method: 'POST',
+                      protocol: 'https:',
+                      headers: {
+                          'Content-Type': 'application/json',
+                          'Content-Length': Buffer.byteLength(body),
+                          'Authorization': `Basic ${auth}`
+                      }
+                  };
+
+                  const req = https.request(options, res => {
+                      let data = '';
+                      res.on('data', chunk => (data += chunk));
+                      res.on('end', () => {
+                          if (res.statusCode >= 200 && res.statusCode < 300) {
+                              resolve({ statusCode: res.statusCode, body: data });
+                          } else {
+                              console.error('OpenSearch error:', res.statusCode, data);
+                              reject(
+                                  new Error(
+                                      `OpenSearch indexing failed with status ${res.statusCode}`
+                                  )
+                              );
+                          }
+                      });
+                  });
+
+                  req.on('error', err => {
+                      console.error('HTTPS request error:', err);
+                      reject(err);
+                  });
+
+                  req.write(body);
+                  req.end();
+              });
+          }
+
+          // Helper: parse custom labels from S3 object metadata
+          function extractCustomLabelsFromMetadata(metadata) {
+              if (!metadata) return [];
+
+              // S3 lowercases user-defined metadata keys
+              const raw = metadata['customlabels'] || metadata['custom-labels'];
+              if (!raw) return [];
+
+              return raw
+                  .split(',')
+                  .map(s => s.trim())
+                  .filter(s => s.length > 0);
+          }
+
+          exports.handler = async (event) => {
+              console.log('Received S3 event:', JSON.stringify(event, null, 2));
+
+              // Handle potentially multiple records in one event
+              const records = event.Records || [];
+
+              const results = [];
+
+              for (const record of records) {
+                  const bucket = record.s3.bucket.name;
+                  const key = decodeURIComponent(
+                      record.s3.object.key.replace(/\+/g, ' ')
+                  );
+                  const eventTime = record.eventTime || new Date().toISOString();
+
+                  console.log(`Processing object: s3://${bucket}/${key}`);
+
+                  try {
+                      // 1. Detect labels with Rekognition
+                      const detectParams = {
+                          Image: {
+                              S3Object: {
+                                  Bucket: bucket,
+                                  Name: key
+                              }
+                          },
+                          MaxLabels: 10,
+                          MinConfidence: 80
+                      };
+
+                      const detectResp = await rekognition.send(
+                          new DetectLabelsCommand(detectParams)
+                      );
+
+                      const rekognitionLabels =
+                          (detectResp.Labels || [])
+                              .map(l => l.Name ? l.Name.toLowerCase() : null)
+                              .filter(Boolean);
+
+                      console.log('Rekognition labels:', rekognitionLabels);
+
+                      // 2. Read S3 object metadata for custom labels
+                      const headResp = await s3.send(
+                          new HeadObjectCommand({ Bucket: bucket, Key: key })
+                      );
+
+                      const customLabelsRaw = extractCustomLabelsFromMetadata(headResp.Metadata);
+                      const customLabels = customLabelsRaw
+                          .map(s => s.toLowerCase())
+                          .filter(Boolean);
+
+                      console.log('Custom labels:', customLabels);
+
+                      // 3. Merge and de-duplicate labels
+                      const mergedLabels = Array.from(
+                          new Set([
+                              ...rekognitionLabels,
+                              ...customLabels
+                          ])
+                      );
+
+                      // 4. Build document to index
+                      const doc = {
+                          objectKey: key,
+                          bucket,
+                          createdTimestamp: eventTime,
+                          labels: mergedLabels
+                      };
+
+                      console.log('Indexing document:', JSON.stringify(doc));
+
+                      // 5. Index into OpenSearch
+                      const resp = await indexDocumentToOpenSearch(doc);
+                      console.log('OpenSearch response:', resp);
+
+                      results.push({
+                          key,
+                          status: 'OK'
+                      });
+
+                  } catch (err) {
+                      if (err.Code === "InvalidImageFormatException" || err.name === "InvalidImageFormatException") {
+                          console.warn(`Skipping invalid image s3://${bucket}/${key}:`, err.message);
+                          results.push({ key, status: "SKIPPED_INVALID_IMAGE", error: err.message });
+                      } else {
+                          console.error(`Error processing s3://${bucket}/${key}:`, err);
+                          results.push({ key, status: "ERROR", error: err.message });
+                      }
+                  }
+              }
+
+              return {
+                  statusCode: 200,
+                  body: JSON.stringify(results)
+              };
+          };
+
+
+  LF2SearchPhotos:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "LF2-search-photos-cfn-${AWS::StackName}"
+      Runtime: nodejs24.x
+      Handler: index.handler
+      Role: !GetAtt LF2Role.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          PHOTOS_BUCKET: !Ref PhotosBucketName
+      Code:
+        ZipFile: |
+          const { LexRuntimeV2Client, RecognizeTextCommand } = require("@aws-sdk/client-lex-runtime-v2");
+          const https = require("https");
+          const { URL } = require("url");
+
+          const OPENSEARCH_ENDPOINT = process.env.OPENSEARCH_ENDPOINT;
+          const OPENSEARCH_INDEX = process.env.OPENSEARCH_INDEX || "photos";
+          const OPENSEARCH_USERNAME = process.env.OPENSEARCH_USERNAME;
+          const OPENSEARCH_PASSWORD = process.env.OPENSEARCH_PASSWORD;
+
+          const LEX_BOT_ID = process.env.LEX_BOT_ID;
+          const LEX_BOT_ALIAS_ID = process.env.LEX_BOT_ALIAS_ID;
+          const LEX_LOCALE_ID = process.env.LEX_LOCALE_ID || "en_US";
+
+          // v3 Lex client – uses Lambda's IAM role + region by default
+          const lexClient = new LexRuntimeV2Client({});
+
+          // Call Lex RecognizeText and extract keywords from the Keywords slot
+          async function getKeywordsFromLex(queryText) {
+              if (!LEX_BOT_ID || !LEX_BOT_ALIAS_ID) {
+                  throw new Error("Lex bot environment variables not set");
+              }
+
+              const params = {
+                  botId: LEX_BOT_ID,
+                  botAliasId: LEX_BOT_ALIAS_ID,
+                  localeId: LEX_LOCALE_ID,
+                  sessionId: "photos-session", // can be any identifier
+                  text: queryText
+              };
+
+              const resp = await lexClient.send(new RecognizeTextCommand(params));
+              console.log(`INTENT NAME ====> ${resp.sessionState.intent.name}`);
+              const intent = resp.sessionState && resp.sessionState.intent;
+              if (!intent || intent.name !== "SearchIntent") {
+                  return [];
+              }
+
+              const slots = intent.slots || {};
+              const keywordSlot = slots.keyword;
+              if (!keywordSlot || !keywordSlot.value || !keywordSlot.value.interpretedValue) {
+                  return [];
+              }
+
+              const raw = keywordSlot.value.interpretedValue.toLowerCase();
+
+              // Very simple keyword extraction:
+              // - remove "and"
+              // - split on spaces/commas
+              // - trim and deduplicate
+              const parts = raw
+                  .replace(/\band\b/g, " ")
+                  .split(/[,\s]+/)
+                  .map(s => s.trim())
+                  .filter(s => s.length > 0);
+
+              return Array.from(new Set(parts));
+          }
+
+          // Query OpenSearch for any of the keywords in the labels field
+          function searchOpenSearch(keywords) {
+              return new Promise((resolve, reject) => {
+                  if (!OPENSEARCH_ENDPOINT) {
+                      return reject(new Error("OPENSEARCH_ENDPOINT not set"));
+                  }
+                  if (!keywords || keywords.length === 0) {
+                      return resolve([]);
+                  }
+
+                  const endpoint = new URL(OPENSEARCH_ENDPOINT);
+                  const path = `/${OPENSEARCH_INDEX}/_search`;
+
+                  const body = JSON.stringify({
+                      query: {
+                          terms: {
+                              labels: keywords
+                          }
+                      }
+                  });
+
+                  const auth = Buffer.from(
+                      `${OPENSEARCH_USERNAME}:${OPENSEARCH_PASSWORD}`
+                  ).toString("base64");
+
+                  const options = {
+                      hostname: endpoint.hostname,
+                      port: endpoint.port || 443,
+                      path,
+                      method: "POST",
+                      protocol: "https:",
+                      headers: {
+                          "Content-Type": "application/json",
+                          "Content-Length": Buffer.byteLength(body),
+                          "Authorization": `Basic ${auth}`
+                      }
+                  };
+
+                  const req = https.request(options, res => {
+                      let data = "";
+                      res.on("data", chunk => (data += chunk));
+                      res.on("end", () => {
+                          if (res.statusCode >= 200 && res.statusCode < 300) {
+                              try {
+                                  const json = JSON.parse(data);
+                                  const hits = (json.hits && json.hits.hits) || [];
+                                  resolve(hits);
+                              } catch (err) {
+                                  reject(err);
+                              }
+                          } else {
+                              console.error("OpenSearch search error:", res.statusCode, data);
+                              reject(
+                                  new Error(
+                                      `OpenSearch search failed with status ${res.statusCode}`
+                                  )
+                              );
+                          }
+                      });
+                  });
+
+                  req.on("error", err => {
+                      console.error("HTTPS search error:", err);
+                      reject(err);
+                  });
+
+                  req.write(body);
+                  req.end();
+              });
+          }
+
+          exports.handler = async (event) => {
+              try {
+                  console.log("Incoming event:", JSON.stringify(event));
+
+                  // For API Gateway proxy: /search?q=...
+                  const q =
+                      (event.queryStringParameters && event.queryStringParameters.q) ||
+                      event.q ||
+                      "";
+
+                  if (!q || q.trim().length === 0) {
+                      return {
+                          statusCode: 200,
+                          headers: {
+                              "Content-Type": "application/json",
+                              "Access-Control-Allow-Origin": "*",
+                              "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key",
+                              "Access-Control-Allow-Methods": "GET,OPTIONS"
+                          },
+                          body: JSON.stringify([])
+                      };
+                  }
+
+                  const queryText = q.trim();
+                  console.log("Search query:", queryText);
+
+                  // 1. Get keywords from Lex
+                  const keywords = await getKeywordsFromLex(queryText);
+                  console.log("Extracted keywords:", keywords);
+
+                  if (!keywords || keywords.length === 0) {
+                      // Assignment requirement: empty array if no keywords
+                      return {
+                          statusCode: 200,
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify([])
+                      };
+                  }
+
+                  // 2. Search OpenSearch
+                  const hits = await searchOpenSearch(keywords);
+
+                  // 3. Map hits to simple JSON objects
+                  const results = hits.map(h => {
+                      const src = h._source || {};
+                      const bucket = src.bucket;
+                      const key = src.objectKey;
+
+                      return {
+                          objectKey: key,
+                          bucket,
+                          labels: src.labels,
+                          url: bucket && key
+                              ? `https://${bucket}.s3.amazonaws.com/${encodeURIComponent(key)}`
+                              : null
+                      };
+                  });
+                  return {
+                      statusCode: 200,
+                      headers: {
+                          "Content-Type": "application/json",
+                          "Access-Control-Allow-Origin": "*",
+                          "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key",
+                          "Access-Control-Allow-Methods": "GET,OPTIONS"
+                      },
+                      body: JSON.stringify(results)
+                  };
+              } catch (err) {
+                  console.error("Error in search-photos:", err);
+
+                  return {
+                      statusCode: 500,
+                      headers: {
+                          "Content-Type": "application/json",
+                          "Access-Control-Allow-Origin": "*",
+                          "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key",
+                          "Access-Control-Allow-Methods": "GET,OPTIONS"
+                      },
+                      body: JSON.stringify({
+                          message: "Internal server error",
+                          error: err.message
+                      })
+                  };
+              }
+          };
+
+
+  ########################################
+  # API Gateway REST API
+  ########################################
+
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "photo-album-api-cfn-${AWS::StackName}"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  ApiGatewayRootResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: photos
+
+  ApiGatewaySearchResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: search
+
+  # Lambda proxy GET /search -> LF2
+  ApiGatewaySearchGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewaySearchResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub >
+          arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF2SearchPhotos.Arn}/invocations
+        Credentials: !GetAtt ApiGatewayLambdaInvokeRole.Arn
+        IntegrationResponses:
+          - StatusCode: 200
+      MethodResponses:
+        - StatusCode: 200
+
+
+
+  # Simple Lambda proxy PUT /photos -> LF1 (just to satisfy "Lambdas + API" requirement)
+  ApiGatewayPhotosPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayRootResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub >
+          arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF1IndexPhotos.Arn}/invocations
+        Credentials: !GetAtt ApiGatewayLambdaInvokeRole.Arn
+        IntegrationResponses:
+          - StatusCode: 200
+      MethodResponses:
+        - StatusCode: 200
+
+
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiGatewaySearchGetMethod
+      - ApiGatewayPhotosPostMethod
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref ApiStageName
+
+  ########################################
+  # Lambda permissions for API Gateway
+  ########################################
+
+  LF1PermissionForApiGateway:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LF1IndexPhotos
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*/photos"
+
+  LF2PermissionForApiGateway:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LF2SearchPhotos
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/GET/search"
+
+Outputs:
+  PhotosBucketOutput:
+    Description: S3 bucket for photo storage
+    Value: !Ref PhotosBucket
+
+  FrontendBucketOutput:
+    Description: S3 bucket for hosting the frontend website
+    Value: !Ref FrontendBucket
+
+  FrontendWebsiteURL:
+    Description: Public website endpoint for the frontend S3 bucket
+    Value: !Sub "http://${FrontendBucket}.s3-website-${AWS::Region}.amazonaws.com"
+
+  ApiBaseUrl:
+    Description: Base URL for the API Gateway REST API
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}"
