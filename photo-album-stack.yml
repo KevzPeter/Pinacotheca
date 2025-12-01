@@ -16,9 +16,7 @@ Parameters:
     Description: API Gateway stage name
 
 Resources:
-  ########################################
   # S3 buckets
-  ########################################
 
   PhotosBucket:
     Type: AWS::S3::Bucket
@@ -50,10 +48,7 @@ Resources:
             Action:
               - s3:GetObject
             Resource: !Sub "${FrontendBucket.Arn}/*"
-
-  ########################################
   # IAM roles for Lambdas
-  ########################################
   ApiGatewayLambdaInvokeRole:
     Type: AWS::IAM::Role
     Properties:
@@ -132,9 +127,7 @@ Resources:
                   - logs:PutLogEvents
                 Resource: "arn:aws:logs:*:*:*"
 
-  ########################################
   # Lambda functions (inline code)
-  ########################################
 
   LF1IndexPhotos:
     Type: AWS::Lambda::Function
@@ -560,10 +553,7 @@ Resources:
               }
           };
 
-
-  ########################################
   # API Gateway REST API
-  ########################################
 
   ApiGatewayRestApi:
     Type: AWS::ApiGateway::RestApi
@@ -607,8 +597,6 @@ Resources:
         - StatusCode: 200
 
 
-
-  # Simple Lambda proxy PUT /photos -> LF1 (just to satisfy "Lambdas + API" requirement)
   ApiGatewayPhotosPostMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -638,9 +626,7 @@ Resources:
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref ApiStageName
 
-  ########################################
   # Lambda permissions for API Gateway
-  ########################################
 
   LF1PermissionForApiGateway:
     Type: AWS::Lambda::Permission
