@@ -1,0 +1,20 @@
+version: 0.2
+
+env:
+  variables:
+    FRONTEND_BUCKET: "cs9223-photos-frontend-kevin"
+
+phases:
+  install:
+    commands:
+      - echo "Install phase - no dependencies for pure static site"
+  build:
+    commands:
+      - echo "Build phase - no build step, just static files"
+  post_build:
+    commands:
+      - aws s3 sync . s3://$FRONTEND_BUCKET --delete --exclude ".git/*" --exclude "buildspec.yml"
+
+artifacts:
+  files:
+    - '**/*'
