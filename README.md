@@ -10,6 +10,8 @@ Pinacotheca allows users to search their photo collection using natural language
 
 ## Architecture
 
+![Architecture Diagram](./media/arch%20diagram.png)
+
 ### Components
 
 1. **Frontend (S3 Bucket B1)**
