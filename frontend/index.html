@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Pinacotheca</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body class="app">
+    <header class="site-header">
+        <h1>Demo Title</h1>
+        <p class="tagline">A minimal photo index</p>
+    </header>
+
+    <main class="container">
+        <section class="card">
+            <h2>Upload Photo</h2>
+            <label>
+                Choose image:
+                <input type="file" id="fileInput" accept="image/*">
+            </label>
+            <label>
+                Custom labels (comma separated):
+                <input type="text" id="labelsInput" placeholder="label1, label2">
+            </label>
+            <button id="uploadBtn">Upload</button>
+            <div class="status" id="uploadStatus"></div>
+        </section>
+
+        <section class="card">
+            <h2>Search Photos</h2>
+            <label>
+                Search query:
+                <input type="text" id="searchInput" placeholder="show me pictures of cats">
+            </label>
+            <button id="searchBtn">Search</button>
+            <div class="status" id="searchStatus"></div>
+            <div class="results" id="results"></div>
+        </section>
+    </main>
+
+    <script>
+        const API_BASE = "https://7ksh9hbi88.execute-api.us-east-1.amazonaws.com/stage";
+        const API_KEY = "Be7cHTa2gw4lxVnYcfOEm6txXVRQUVwU8egh2oDE";
+
+        async function uploadPhoto() {
+            const fileInput = document.getElementById("fileInput");
+            const labelsInput = document.getElementById("labelsInput");
+            const statusEl = document.getElementById("uploadStatus");
+
+            statusEl.textContent = "";
+
+            if (!fileInput.files || fileInput.files.length === 0) {
+                statusEl.textContent = "Please choose an image file.";
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const customLabels = labelsInput.value.trim();
+
+            const objectKey = encodeURIComponent(file.name);
+
+            const url = `${API_BASE}/photos?objectKey=${objectKey}`;
+
+            try {
+                statusEl.textContent = "Uploading...";
+
+                const resp = await fetch(url, {
+                    method: "PUT",
+                    headers: {
+                        "x-api-key": API_KEY,
+                        "x-amz-meta-customLabels": customLabels,
+                        "Content-Type": "application/octet-stream"
+                    },
+                    body: file
+                });
+
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    statusEl.textContent = `Upload failed: ${resp.status} ${resp.statusText} ${text}`;
+                    return;
+                }
+
+                statusEl.textContent = "Upload successful. It may take a moment for indexing.";
+                fileInput.value = "";
+                labelsInput.value = "";
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = `Upload error: ${err.message}`;
+            }
+        }
+
+        async function searchPhotos() {
+            const searchInput = document.getElementById("searchInput");
+            const statusEl = document.getElementById("searchStatus");
+            const resultsEl = document.getElementById("results");
+
+            statusEl.textContent = "";
+            resultsEl.innerHTML = "";
+
+            const q = searchInput.value.trim();
+            if (!q) {
+                statusEl.textContent = "Please enter a search query.";
+                return;
+            }
+
+            const url = `${API_BASE}/search?q=${encodeURIComponent(q)}`;
+
+            try {
+                statusEl.textContent = "Searching...";
+
+                const resp = await fetch(url, {
+                    method: "GET",
+                    headers: {
+                        "x-api-key": API_KEY
+                    }
+                });
+
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    statusEl.textContent = `Search failed: ${resp.status} ${resp.statusText} ${text}`;
+                    return;
+                }
+
+                const data = await resp.json();
+                statusEl.textContent = `Found ${data.length} photo(s).`;
+
+                data.forEach(item => {
+                    const card = document.createElement("div");
+                    card.className = "photo-card";
+
+                    if (item.url) {
+                        const img = document.createElement("img");
+                        img.src = item.url;
+                        img.alt = item.objectKey || "";
+                        card.appendChild(img);
+                    }
+
+                    const keyEl = document.createElement("div");
+                    keyEl.textContent = item.objectKey || "";
+                    card.appendChild(keyEl);
+
+                    if (item.labels && item.labels.length > 0) {
+                        const labelsEl = document.createElement("div");
+                        labelsEl.className = "labels";
+                        labelsEl.textContent = "Labels: " + item.labels.join(", ");
+                        card.appendChild(labelsEl);
+                    }
+
+                    resultsEl.appendChild(card);
+                });
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = `Search error: ${err.message}`;
+            }
+        }
+
+        document.getElementById("uploadBtn").addEventListener("click", uploadPhoto);
+        document.getElementById("searchBtn").addEventListener("click", searchPhotos);
+    </script>
+</body>
+
+</html>
