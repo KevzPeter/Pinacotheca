@@ -1,5 +1,7 @@
 # Pinacotheca - Photo Index
 
+![Homepage](./media/homepage.png)
+
 An intelligent photo album web application that enables natural language search capabilities using AWS services including Lex, ElasticSearch, and Rekognition.
 
 ## Overview
