@@ -597,16 +597,16 @@ Resources:
         - StatusCode: 200
 
 
-  ApiGatewayPhotosPostMethod:
+  ApiGatewayPhotosPUTMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       ResourceId: !Ref ApiGatewayRootResource
-      HttpMethod: POST
+      HttpMethod: PUT
       AuthorizationType: NONE
       Integration:
         Type: AWS
-        IntegrationHttpMethod: POST
+        IntegrationHttpMethod: PUT
         Uri: !Sub >
           arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LF1IndexPhotos.Arn}/invocations
         Credentials: !GetAtt ApiGatewayLambdaInvokeRole.Arn
@@ -621,7 +621,7 @@ Resources:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - ApiGatewaySearchGetMethod
-      - ApiGatewayPhotosPostMethod
+      - ApiGatewayPhotosPUTMethod
     Properties:
       RestApiId: !Ref ApiGatewayRestApi
       StageName: !Ref ApiStageName
